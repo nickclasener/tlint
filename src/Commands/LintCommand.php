@@ -19,11 +19,11 @@ use Tighten\Lint;
 use Tighten\Linters\AlphabeticalImports;
 use Tighten\Linters\ApplyMiddlewareInRoutes;
 use Tighten\Linters\ClassThingsOrder;
+use Tighten\Linters\ConcatenationSpacing;
 use Tighten\Linters\ImportFacades;
 use Tighten\Linters\MailableMethodsInBuild;
 use Tighten\Linters\ModelMethodOrder;
 use Tighten\Linters\NewLineAtEndOfFile;
-use Tighten\Linters\NoCompact;
 use Tighten\Linters\NoDd;
 use Tighten\Linters\NoDocBlocksForMigrationUpDown;
 use Tighten\Linters\NoInlineVarDocs;
@@ -34,15 +34,14 @@ use Tighten\Linters\NoStringInterpolationWithoutBraces;
 use Tighten\Linters\NoUnusedImports;
 use Tighten\Linters\OneLineBetweenClassVisibilityChanges;
 use Tighten\Linters\PureRestControllers;
+use Tighten\Linters\QualifiedNamesOnlyForClassName;
+use Tighten\Linters\RemoveLeadingSlashNamespaces;
 use Tighten\Linters\RequestHelperFunctionWherePossible;
 use Tighten\Linters\RequestValidation;
 use Tighten\Linters\RestControllersMethodOrder;
 use Tighten\Linters\SpaceAfterBladeDirectives;
-use Tighten\Linters\QualifiedNamesOnlyForClassName;
-use Tighten\Linters\RemoveLeadingSlashNamespaces;
 use Tighten\Linters\SpaceAfterSoleNotOperator;
 use Tighten\Linters\SpacesAroundBladeRenderContent;
-use Tighten\Linters\ConcatenationSpacing;
 use Tighten\Linters\TrailingCommasOnArrays;
 use Tighten\Linters\UseAuthHelperOverFacade;
 use Tighten\Linters\ViewWithOverArrayParamaters;
@@ -50,288 +49,290 @@ use Tighten\TLint;
 
 class LintCommand extends Command
 {
-    private const NO_LINTS_FOUND_OR_SUCCESS = 0;
-    private const LINTS_FOUND_OR_ERROR = 1;
+	private const NO_LINTS_FOUND_OR_SUCCESS = 0;
+	private const LINTS_FOUND_OR_ERROR      = 1;
 
-    protected function configure()
-    {
-        $this
-            ->setName('lint')
-            ->setDescription('Lints a file.')
-            ->setDefinition(new InputDefinition([
-                new InputArgument(
-                    'file or directory',
-                    InputArgument::OPTIONAL,
-                    'The file or directory to lint',
-                    getcwd()
-                ),
-                new InputOption(
-                    'diff'
-                ),
-                new InputOption(
-                    'json'
-                ),
-            ]))
-            ->setHelp('This command allows you to lint a laravel file.');
-    }
+	protected function configure ()
+	{
+		$this
+				->setName('lint')
+				->setDescription('Lints a file.')
+				->setDefinition(new InputDefinition([
+						new InputArgument(
+								'file or directory',
+								InputArgument::OPTIONAL,
+								'The file or directory to lint',
+								getcwd()
+						),
+						new InputOption(
+								'diff'
+						),
+						new InputOption(
+								'json'
+						),
+				]))
+				->setHelp('This command allows you to lint a laravel file.');
+	}
 
-    private function lintFile(InputInterface $input, OutputInterface $output, $file)
-    {
-        if ($this->isBlacklisted($file)) {
-            return self::NO_LINTS_FOUND_OR_SUCCESS;
-        }
+	protected function execute ( InputInterface $input, OutputInterface $output )
+	{
+		$fileOrDirectory = $input->getArgument('file or directory');
+		$finalResponseCode = self::NO_LINTS_FOUND_OR_SUCCESS;
 
-        $linters = $this->getLinters($file);
+		if ( $this->isBlacklisted($fileOrDirectory) ) {
+			return self::NO_LINTS_FOUND_OR_SUCCESS;
+		}
 
-        $tighten = new TLint;
+		if ( is_file($fileOrDirectory) ) {
+			$finalResponseCode = $this->lintFile($input, $output, $fileOrDirectory);
+		} elseif ( is_dir($fileOrDirectory) ) {
+			try {
+				foreach ( $this->filesInDir($fileOrDirectory, 'php', $input->getOption('diff')) as $file ) {
+					if ( $this->lintFile($input, $output, $file) === 1 ) {
+						$finalResponseCode = self::LINTS_FOUND_OR_ERROR;
+					}
+				}
+			} catch ( ProcessFailedException $e ) {
+				$output->writeln('Not a git repository (or any of the parent directories)');
 
-        $lints = [];
+				$finalResponseCode = self::LINTS_FOUND_OR_ERROR;
+			}
+		} else {
+			$output->writeln('No file or directory found at ' . $fileOrDirectory);
 
-        foreach ($linters as $linterClass => $parseAs) {
-            $linterInstance = new $linterClass(
-                file_get_contents($file),
-                $parseAs
-            );
+			return self::LINTS_FOUND_OR_ERROR;
+		}
 
-            try {
-                $lints = array_merge($lints, $tighten->lint($linterInstance));
-            } catch (Error $e) {
-                $linterInstance->setLintDescription($e->getRawMessage());
+		if ( $finalResponseCode === self::NO_LINTS_FOUND_OR_SUCCESS ) {
+			$output->writeLn('LGTM!');
+		}
 
-                return $this->outputLints($output, $file, [
-                    new Lint(
-                        $linterInstance,
-                        new CustomNode(['startLine' => $e->getStartLine()])
-                    ),
-                ]);
-            }
-        }
+		return $finalResponseCode;
+	}
 
-        if ($input->getOption('json')) {
-            return $this->outputLintsAsJson($output, $file, $lints);
-        } else {
-            return $this->outputLints($output, $file, $lints);
-        }
-    }
+	private function isBlacklisted ( $filepath )
+	{
+		return strpos($filepath, 'vendor') !== false
+				|| strpos($filepath, 'public/') !== false
+				|| strpos($filepath, 'bootstrap/') !== false
+				|| strpos($filepath, 'server.php') !== false
+				|| strpos($filepath, 'app/Http/Middleware/RedirectIfAuthenticated.php') !== false
+				|| strpos($filepath, 'app/Exceptions/Handler.php') !== false
+				|| strpos($filepath, 'app/Http/Controllers/Auth') !== false
+				|| strpos($filepath, 'app/Http/Kernel.php') !== false
+				|| strpos($filepath, 'storage/framework/views') !== false
+				|| strpos($filepath, '.phpstorm.meta.php') !== false;
 
-    private function outputLintsAsJson(OutputInterface $output, $file, $lints)
-    {
-        $errors = array_map(function (Lint $lint) {
-            $title = explode(PHP_EOL, (string) $lint)[0];
+	}
 
-            return [
-                'line' => $lint->getNode()->getStartLine(),
-                'message' => $title,
-                'source' => class_basename($lint->getLinter()),
-            ];
-        }, $lints);
+	private function lintFile ( InputInterface $input, OutputInterface $output, $file )
+	{
+		if ( $this->isBlacklisted($file) ) {
+			return self::NO_LINTS_FOUND_OR_SUCCESS;
+		}
 
-        $output->writeln(json_encode([
-            'errors' => $errors,
-        ]));
-    }
+		$linters = $this->getLinters($file);
 
-    private function outputLints(OutputInterface $output, $file, $lints)
-    {
-        if (! empty($lints)) {
-            $output->writeln([
-                "Lints for {$file}",
-                '============',
-            ]);
+		$tighten = new TLint;
 
-            foreach ($lints as $lint) {
-                [$title, $codeLine] = explode(PHP_EOL, (string) $lint);
+		$lints = [];
 
-                $output->writeln([
-                    "<fg=yellow>{$title}</>",
-                    $codeLine,
-                ]);
-            }
+		foreach ( $linters as $linterClass => $parseAs ) {
+			$linterInstance = new $linterClass(
+					file_get_contents($file),
+					$parseAs
+			);
 
-            $output->writeln(['']);
+			try {
+				$lints = array_merge($lints, $tighten->lint($linterInstance));
+			} catch ( Error $e ) {
+				$linterInstance->setLintDescription($e->getRawMessage());
 
-            return self::LINTS_FOUND_OR_ERROR;
-        }
+				return $this->outputLints($output, $file, [
+						new Lint(
+								$linterInstance,
+								new CustomNode([ 'startLine' => $e->getStartLine() ])
+						),
+				]);
+			}
+		}
 
-        return self::NO_LINTS_FOUND_OR_SUCCESS;
-    }
+		if ( $input->getOption('json') ) {
+			return $this->outputLintsAsJson($output, $file, $lints);
+		} else {
+			return $this->outputLints($output, $file, $lints);
+		}
+	}
 
-    private function isBlacklisted($filepath)
-    {
-        return strpos($filepath, 'vendor') !== false
-            || strpos($filepath, 'public/') !== false
-            || strpos($filepath, 'bootstrap/') !== false
-            || strpos($filepath, 'server.php') !== false
-            || strpos($filepath, 'app/Http/Middleware/RedirectIfAuthenticated.php') !== false
-            || strpos($filepath, 'app/Exceptions/Handler.php') !== false
-            || strpos($filepath, 'app/Http/Controllers/Auth') !== false
-            || strpos($filepath, 'app/Http/Kernel.php') !== false
-            || strpos($filepath, 'storage/framework/views') !== false;
-    }
+	private function getLinters ( $path )
+	{
+		return array_merge(
+				[
+						RemoveLeadingSlashNamespaces::class         => '.php',
+						QualifiedNamesOnlyForClassName::class       => '.php',
+						UseAuthHelperOverFacade::class              => '.php',
+						ImportFacades::class                        => '.php',
+						ModelMethodOrder::class                     => '.php',
+						ClassThingsOrder::class                     => '.php',
+						AlphabeticalImports::class                  => '.php',
+						TrailingCommasOnArrays::class               => '.php',
+						NoParensEmptyInstantiations::class          => '.php',
+						SpaceAfterSoleNotOperator::class            => '.php',
+						OneLineBetweenClassVisibilityChanges::class => '.php',
+						NoStringInterpolationWithoutBraces::class   => '.php',
+						ConcatenationSpacing::class                 => '.php',
+						NoDd::class                                 => '.php',
+						NoInlineVarDocs::class                      => '.php',
+						NoUnusedImports::class                      => '.php',
+						NewLineAtEndOfFile::class                   => '.php',
+				],
+				$this->getRoutesFilesLinters($path),
+				$this->getControllerFilesLinters($path),
+				$this->getBladeTemplatesLinters($path),
+				$this->getMigrationsLinters($path),
+				$this->getMailableLinters($path)
+		);
+	}
 
-    private function filesInDir($directory, $fileExtension, $diff)
-    {
-        if ($diff) {
-            return $this->getDiffedFilesInDir($directory, $fileExtension);
-        }
+	private function getRoutesFilesLinters ( $path )
+	{
+		if ( strpos($path, 'routes') !== false ) {
+			return [
+					ViewWithOverArrayParamaters::class  => '.php',
+					NoLeadingSlashesOnRoutePaths::class => '.php',
+			];
+		}
 
-        return $this->getAllFilesInDir($directory, $fileExtension);
-    }
+		return [];
+	}
 
-    private function getDiffedFilesInDir($directory, $fileExtension)
-    {
-        $process = new Process('git diff --name-only --diff-filter=ACMRTUXB');
-        $process->run();
+	private function getControllerFilesLinters ( $path )
+	{
+		if ( strpos($path, 'app/Http/Controllers') !== false ) {
+			return [
+					ViewWithOverArrayParamaters::class        => '.php',
+					PureRestControllers::class                => '.php',
+					RestControllersMethodOrder::class         => '.php',
+					RequestHelperFunctionWherePossible::class => '.php',
+					ApplyMiddlewareInRoutes::class            => '.php',
+					//					NoCompact::class                          => '.php',
+					RequestValidation::class                  => '.php',
+			];
+		}
 
-        if (! $process->isSuccessful()) {
-            throw new ProcessFailedException($process);
-        }
+		return [];
+	}
 
-        foreach (explode(PHP_EOL, trim($process->getOutput())) as $relativeFilePath) {
-            $filepath = getcwd() . '/' . $relativeFilePath;
+	private function getBladeTemplatesLinters ( $path )
+	{
+		if ( strpos($path, '.blade.php') !== false ) {
+			return [
+					SpaceAfterBladeDirectives::class      => '.php',
+					NoSpaceAfterBladeDirectives::class    => '.php',
+					SpacesAroundBladeRenderContent::class => '.php',
+					UseAuthHelperOverFacade::class        => '.blade.php',
+			];
+		}
 
-            yield $filepath;
-        }
-    }
+		return [];
+	}
 
-    private function getAllFilesInDir($directory, $fileExtension)
-    {
-        $directory = realpath($directory);
-        $it = new RecursiveDirectoryIterator($directory);
-        $it = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::LEAVES_ONLY);
-        $it = new RegexIterator($it, '(\.' . preg_quote($fileExtension) . '$)');
+	private function getMigrationsLinters ( $path )
+	{
+		if ( strpos($path, 'migrations') !== false ) {
+			return [
+					NoDocBlocksForMigrationUpDown::class => '.php',
+			];
+		}
 
-        foreach ($it as $file) {
-            $filepath = $file->getRealPath();
+		return [];
+	}
 
-            yield $filepath;
-        }
-    }
+	private function getMailableLinters ( $path )
+	{
+		return [
+				MailableMethodsInBuild::class => '.php',
+		];
+	}
 
-    protected function execute(InputInterface $input, OutputInterface $output)
-    {
-        $fileOrDirectory = $input->getArgument('file or directory');
-        $finalResponseCode = self::NO_LINTS_FOUND_OR_SUCCESS;
+	private function outputLints ( OutputInterface $output, $file, $lints )
+	{
+		if ( ! empty($lints) ) {
+			$output->writeln([
+					"Lints for {$file}",
+					'============',
+			]);
 
-        if ($this->isBlacklisted($fileOrDirectory)) {
-            return self::NO_LINTS_FOUND_OR_SUCCESS;
-        }
+			foreach ( $lints as $lint ) {
+				[ $title, $codeLine ] = explode(PHP_EOL, (string)$lint);
 
-        if (is_file($fileOrDirectory)) {
-            $finalResponseCode = $this->lintFile($input, $output, $fileOrDirectory);
-        } elseif (is_dir($fileOrDirectory)) {
-            try {
-                foreach ($this->filesInDir($fileOrDirectory, 'php', $input->getOption('diff')) as $file) {
-                    if ($this->lintFile($input, $output, $file) === 1) {
-                        $finalResponseCode = self::LINTS_FOUND_OR_ERROR;
-                    }
-                }
-            } catch (ProcessFailedException $e) {
-                $output->writeln('Not a git repository (or any of the parent directories)');
+				$output->writeln([
+						"<fg=yellow>{$title}</>",
+						$codeLine,
+				]);
+			}
 
-                $finalResponseCode = self::LINTS_FOUND_OR_ERROR;
-            }
-        } else {
-            $output->writeln('No file or directory found at ' . $fileOrDirectory);
+			$output->writeln([ '' ]);
 
-            return self::LINTS_FOUND_OR_ERROR;
-        }
+			return self::LINTS_FOUND_OR_ERROR;
+		}
 
-        if ($finalResponseCode === self::NO_LINTS_FOUND_OR_SUCCESS) {
-            $output->writeLn('LGTM!');
-        }
+		return self::NO_LINTS_FOUND_OR_SUCCESS;
+	}
 
-        return $finalResponseCode;
-    }
+	private function outputLintsAsJson ( OutputInterface $output, $file, $lints )
+	{
+		$errors = array_map(function ( Lint $lint ) {
+			$title = explode(PHP_EOL, (string)$lint)[ 0 ];
 
-    private function getRoutesFilesLinters($path)
-    {
-        if (strpos($path, 'routes') !== false) {
-            return [
-                ViewWithOverArrayParamaters::class => '.php',
-                NoLeadingSlashesOnRoutePaths::class => '.php',
-            ];
-        }
+			return [
+					'line'    => $lint->getNode()->getStartLine(),
+					'message' => $title,
+					'source'  => class_basename($lint->getLinter()),
+			];
+		}, $lints);
 
-        return [];
-    }
+		$output->writeln(json_encode([
+				'errors' => $errors,
+		]));
+	}
 
-    private function getMigrationsLinters($path)
-    {
-        if (strpos($path, 'migrations') !== false) {
-            return [
-                NoDocBlocksForMigrationUpDown::class => '.php',
-            ];
-        }
+	private function filesInDir ( $directory, $fileExtension, $diff )
+	{
+		if ( $diff ) {
+			return $this->getDiffedFilesInDir($directory, $fileExtension);
+		}
 
-        return [];
-    }
+		return $this->getAllFilesInDir($directory, $fileExtension);
+	}
 
-    private function getControllerFilesLinters($path)
-    {
-        if (strpos($path, 'app/Http/Controllers') !== false) {
-            return [
-                ViewWithOverArrayParamaters::class => '.php',
-                PureRestControllers::class => '.php',
-                RestControllersMethodOrder::class => '.php',
-                RequestHelperFunctionWherePossible::class => '.php',
-                ApplyMiddlewareInRoutes::class => '.php',
-                NoCompact::class => '.php',
-                RequestValidation::class => '.php',
-            ];
-        }
+	private function getDiffedFilesInDir ( $directory, $fileExtension )
+	{
+		$process = new Process('git diff --name-only --diff-filter=ACMRTUXB');
+		$process->run();
 
-        return [];
-    }
+		if ( ! $process->isSuccessful() ) {
+			throw new ProcessFailedException($process);
+		}
 
-    private function getBladeTemplatesLinters($path)
-    {
-        if (strpos($path, '.blade.php') !== false) {
-            return [
-                SpaceAfterBladeDirectives::class => '.php',
-                NoSpaceAfterBladeDirectives::class => '.php',
-                SpacesAroundBladeRenderContent::class => '.php',
-                UseAuthHelperOverFacade::class => '.blade.php',
-            ];
-        }
+		foreach ( explode(PHP_EOL, trim($process->getOutput())) as $relativeFilePath ) {
+			$filepath = getcwd() . '/' . $relativeFilePath;
 
-        return [];
-    }
+			yield $filepath;
+		}
+	}
 
-    private function getMailableLinters($path)
-    {
-        return [
-            MailableMethodsInBuild::class => '.php',
-        ];
-    }
+	private function getAllFilesInDir ( $directory, $fileExtension )
+	{
+		$directory = realpath($directory);
+		$it = new RecursiveDirectoryIterator($directory);
+		$it = new RecursiveIteratorIterator($it, RecursiveIteratorIterator::LEAVES_ONLY);
+		$it = new RegexIterator($it, '(\.' . preg_quote($fileExtension) . '$)');
 
-    private function getLinters($path)
-    {
-        return array_merge(
-            [
-                RemoveLeadingSlashNamespaces::class => '.php',
-                QualifiedNamesOnlyForClassName::class => '.php',
-                UseAuthHelperOverFacade::class => '.php',
-                ImportFacades::class => '.php',
-                ModelMethodOrder::class => '.php',
-                ClassThingsOrder::class => '.php',
-                AlphabeticalImports::class => '.php',
-                TrailingCommasOnArrays::class => '.php',
-                NoParensEmptyInstantiations::class => '.php',
-                SpaceAfterSoleNotOperator::class => '.php',
-                OneLineBetweenClassVisibilityChanges::class => '.php',
-                NoStringInterpolationWithoutBraces::class => '.php',
-                ConcatenationSpacing::class => '.php',
-                NoDd::class => '.php',
-                NoInlineVarDocs::class => '.php',
-                NoUnusedImports::class => '.php',
-                NewLineAtEndOfFile::class => '.php',
-            ],
-            $this->getRoutesFilesLinters($path),
-            $this->getControllerFilesLinters($path),
-            $this->getBladeTemplatesLinters($path),
-            $this->getMigrationsLinters($path),
-            $this->getMailableLinters($path)
-        );
-    }
+		foreach ( $it as $file ) {
+			$filepath = $file->getRealPath();
+
+			yield $filepath;
+		}
+	}
 }

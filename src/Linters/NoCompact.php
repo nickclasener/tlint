@@ -11,20 +11,20 @@ use Tighten\BaseLinter;
 
 class NoCompact extends BaseLinter
 {
-    protected $description = 'There should be no calls to `compact()` in controllers';
+	protected $description = 'There should be no calls to `compact()` in controllers';
 
-    public function lint(Parser $parser)
-    {
-        $traverser = new NodeTraverser;
+	public function lint ( Parser $parser )
+	{
+		$traverser = new NodeTraverser;
 
-        $visitor = new FindingVisitor(function (Node $node) {
-            return $node instanceof FuncCall && ! empty($node->name->parts) && $node->name->parts[0] === 'compact';
-        });
+		$visitor = new FindingVisitor(function ( Node $node ) {
+			return $node instanceof FuncCall && ! empty($node->name->parts) && $node->name->parts[ 0 ] === 'compact';
+		});
 
-        $traverser->addVisitor($visitor);
+		$traverser->addVisitor($visitor);
 
-        $traverser->traverse($parser->parse($this->code));
+		$traverser->traverse($parser->parse($this->code));
 
-        return $visitor->getFoundNodes();
-    }
+		return $visitor->getFoundNodes();
+	}
 }
